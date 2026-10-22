@@ -18,8 +18,9 @@ function errorCategory(error) {
   if (error?.code === 'request_timeout' || error?.code === 'request_aborted' || /abort(?:ed|error)|请求已取消|网关请求超时/i.test(source)) return 'request';
   if (status === 429 || /resource.*exhausted|quota|rate.?limit/i.test(source)) return 'quota';
   if (/fetch failed|network|timeout|timed out|econnreset|econnrefused|enotfound|eai_again|socket|tls|dns/i.test(source)) return 'transient';
-  if (status === 401 || status === 403 || (status >= 400 && status < 500 && /direct_refresh_failed/i.test(source)) || /invalid_grant|refresh token|auth.*missing|登录态|unauthenticated|permission.?denied|forbidden|verify\s*your\s*account|account.*verif|security.*challenge|account.*(?:disabled|suspended)/i.test(source)) return 'account';
+  // 刷新端点的暂时故障可能带有“登录态”文案，不能据此持久隔离账号。
   if (status === 408 || status === 425 || status >= 500) return 'transient';
+  if (status === 401 || status === 403 || (status >= 400 && status < 500 && /direct_refresh_failed/i.test(source)) || /invalid_grant|refresh token|auth.*missing|登录态|unauthenticated|permission.?denied|forbidden|verify\s*your\s*account|account.*verif|security.*challenge|account.*(?:disabled|suspended)/i.test(source)) return 'account';
   return 'request';
 }
 
