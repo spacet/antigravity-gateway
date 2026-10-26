@@ -28,7 +28,7 @@ rl.on('line', (line) => {
   const response = content.includes('RETURN_TOOL')
     ? '<ANTIGRAVITY_GATEWAY_TOOL_CALLS>{"tool_calls":[{"name":"shell","arguments":{"command":"pwd"}}]}</ANTIGRAVITY_GATEWAY_TOOL_CALLS>'
     : content.includes('CLAUDE_CODE_AUTO_MODE') || content.includes('AUTO_MODE_XML_REPAIR')
-      ? 'Verdict: <block>no</block>'
+      ? '<block>no</block>'
       : `hello-${turn}`;
   const midpoint = Math.max(1, Math.floor(response.length / 2));
   process.stdout.write(`${JSON.stringify({ event: 'step_update', step_update: { conversation_id: conversationId, step_type: 'agent_response', state: 'ACTIVE', text_delta: response.slice(0, midpoint) } })}\n`);

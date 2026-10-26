@@ -514,6 +514,12 @@ function consumeUpstreamValue(value, state, onDelta, onThinkingDelta) {
   if (value.error) throw new DirectProviderError('Antigravity 直连上游返回错误。', {
     code: 'direct_upstream_error', status: Number(value.error.code) || 502, details: redact(value.error.message || compact(value.error))
   });
+  const root = value.response || value;
+  const candidate = root.candidates?.[0];
+  const finishReason = candidate?.finishReason || candidate?.finish_reason || root.promptFeedback?.blockReason;
+  if (finishReason) state.finishReason = finishReason;
+  const stopSequence = candidate?.stopSequence ?? candidate?.stop_sequence;
+  if (typeof stopSequence === 'string') state.stopSequence = stopSequence;
   const parts = partsFrom(value);
   state.receivedContent ||= parts.some(part => part.text || part.thoughtSignature || part.functionCall || part.function_call);
   for (const part of parts) {
@@ -1278,6 +1284,9 @@ class DirectAntigravityProvider {
     if (state.calls.length) {
       for (const call of state.calls) if (!call.id) call.id = `call_${crypto.randomUUID().replaceAll('-', '')}`;
     }
+    if (state.calls.length && state.finishReason && !['STOP', 'TOOL_CALLS', 'TOOL_USE', 'STOP_SEQUENCE'].includes(String(state.finishReason).toUpperCase())) {
+      throw new DirectProviderError('上游工具结果未正常完成，不执行或投影为完整结果。', { code: 'incomplete_tool_call', status: 502 });
+    }
     const finished = finishResult(native.structuredSchema, state.calls);
     const clientCalls = finished ? [] : state.calls.map(native.toolAdapter.toClient);
     const historyParts = [];
@@ -1341,6 +1350,8 @@ class DirectAntigravityProvider {
       thinking: recoveredThinking + state.thinking,
       streamedText: finished ? '' : combinedText,
       toolCalls: clientCalls,
+      ...(state.finishReason ? { finishReason: state.finishReason } : {}),
+      ...(typeof state.stopSequence === 'string' ? { stopSequence: state.stopSequence } : {}),
       usage: Object.fromEntries([...new Set([...Object.keys(state.usage), ...Object.keys(recoveredUsage)])]
         .map(key => [key, (state.usage[key] || 0) + (recoveredUsage[key] || 0)])),
       conversationId: sessionId,

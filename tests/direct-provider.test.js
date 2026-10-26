@@ -266,6 +266,25 @@ test('direct request reserves enough hidden-thinking budget for Claude Code Auto
   assert.equal(request.request.generationConfig.maxOutputTokens, 8192);
 });
 
+test('direct provider preserves explicit normal tool finish reasons and rejects incomplete calls', async () => {
+  for (const finishReason of ['STOP', 'TOOL_CALLS', 'TOOL_USE', 'STOP_SEQUENCE', 'MAX_TOKENS', 'SAFETY']) {
+    const provider = new DirectAntigravityProvider({ localAuth: null, accessToken: 'synthetic', projectId: 'synthetic',
+      baseUrl: 'https://example.test', maxRetries: 0,
+      fetchImpl: async () => new Response(JSON.stringify({ candidates: [{ finishReason, content: { parts: [{
+        functionCall: { id: 'synthetic-id', name: 'shell', args: { command: 'pwd' } }
+      }] } }] }), { headers: { 'content-type': 'application/json' } }) });
+    const request = { ...normalized(), tools: [{ name: 'shell', schema: { type: 'object' } }] };
+    if (finishReason === 'MAX_TOKENS' || finishReason === 'SAFETY') {
+      await assert.rejects(() => provider.send(request, 'gemini-test-high', { sessionId: `tool-${finishReason}` }), { code: 'incomplete_tool_call' });
+    } else {
+      const result = await provider.send(request, 'gemini-test-high', { sessionId: `tool-${finishReason}` });
+      assert.equal(result.finishReason, finishReason);
+      assert.equal(result.toolCalls[0].id, 'synthetic-id');
+      assert.equal(result.toolCalls[0].arguments.command, 'pwd');
+    }
+  }
+});
+
 test('direct provider parses non-stream text and usage', async () => {
   const calls = [];
   const provider = new DirectAntigravityProvider({

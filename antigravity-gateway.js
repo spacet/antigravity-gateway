@@ -960,7 +960,7 @@ async function runTurn(normalized, model, signal, { sessionId, routingKey, reque
       try {
         return finalize(raw);
       } catch (error) {
-        if (error.code === 'invalid_auto_mode_classifier_output') {
+        if (error.code === 'invalid_auto_mode_classifier_output' && (!raw.finishReason || ['STOP', 'END_TURN', 'STOP_SEQUENCE'].includes(String(raw.finishReason).toUpperCase()))) {
           raw = await PROVIDER_ROUTER.send(prepared.normalized, upstreamModel, { signal, sessionId, routingKey, requestId, clientId, clientLabel, onAccountSelected, reuseConversation, ...taskScope, repairInstruction: 'Return only the XML verdict required by the client contract. No prose or Markdown.' });
           return finalize(raw);
         }
@@ -1134,7 +1134,7 @@ function createAnthropicTextEmitter(res, model) {
       // message_start went out before upstream usage existed; message_delta usage is cumulative per the Messages API.
       sendSse(res, 'message_delta', {
         type: 'message_delta',
-        delta: { stop_reason: body.stop_reason, stop_sequence: null },
+        delta: { stop_reason: body.stop_reason, stop_sequence: body.stop_sequence ?? null },
         usage: body.usage,
         ...(body.usage_known === false ? { usage_known: false } : {}),
         ...(body.artifacts ? { artifacts: body.artifacts } : {})
@@ -1229,7 +1229,7 @@ function emitAnthropicStream(res, body) {
   });
   sendSse(res, 'message_delta', {
     type: 'message_delta',
-    delta: { stop_reason: body.stop_reason, stop_sequence: null },
+    delta: { stop_reason: body.stop_reason, stop_sequence: body.stop_sequence ?? null },
     usage: body.usage,
     ...(body.usage_known === false ? { usage_known: false } : {}),
     ...(body.artifacts ? { artifacts: body.artifacts } : {})
@@ -1340,7 +1340,7 @@ function createResponsesTextEmitter(res, model, responseId) {
       && !(item === reasoning && states.has('reasoning')));
     body.output = [...completed, ...remaining];
     remaining.forEach((item, index) => emitResponsesItem(emit, item, completed.length + index));
-    emit({ type: 'response.completed', response: body });
+    emit({ type: body.status === 'incomplete' ? 'response.incomplete' : 'response.completed', response: body });
     res.write('data: [DONE]\n\n');
     res.end();
   } };
@@ -1351,7 +1351,7 @@ function emitResponsesStream(res, body) {
   let sequence = 0;
   sendSse(res, null, { type: 'response.created', sequence_number: sequence++, response: { ...body, status: 'in_progress', output: [] } });
   body.output.forEach((item, index) => emitResponsesItem((event) => sendSse(res, null, { ...event, sequence_number: sequence++ }), item, index));
-  sendSse(res, null, { type: 'response.completed', sequence_number: sequence++, response: body });
+  sendSse(res, null, { type: body.status === 'incomplete' ? 'response.incomplete' : 'response.completed', sequence_number: sequence++, response: body });
   res.write('data: [DONE]\n\n');
   res.end();
 }

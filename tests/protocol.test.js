@@ -146,10 +146,10 @@ test('Auto mode extracts XML and fails closed', () => {
   assert.throws(() => normalizeAutoMode('<block>yes</block><block>no</block>'), /XML/);
   assert.throws(() => normalizeAutoMode('<block>no</block><block>no</block>'), /XML/);
   assert.throws(() => normalizeAutoMode('<severity>1</severity><severity>99</severity>', 'severity'), /XML/);
-  assert.equal(normalizeAutoMode('safe\n<block>no</block>'), '<block>no</block>');
+  assert.throws(() => normalizeAutoMode('safe\n<block>no</block>'), /XML/);
   assert.equal(
-    normalizeAutoMode('<block>yes</block><category>Risk</category><reason>why</reason>'),
-    '<block>yes</block><category>Risk</category><reason>why</reason>'
+    normalizeAutoMode('<block>yes</block><category>Risk</category><reason>[Risk] why</reason>'),
+    '<block>yes</block><category>Risk</category><reason>[Risk] why</reason>'
   );
   assert.throws(() => normalizeAutoMode('probably safe'), /XML/);
 });
@@ -163,7 +163,7 @@ test('structured validator checks nested unions, intersections and tuple tails',
   assert.equal(validateSchema(['x', 1], { prefixItems: [{ type: 'string' }], items: false }), false);
 });
 
-test('current Claude Code Auto mode block contract is detected by grammar', () => {
+test('synthetic Auto mode block grammar is detected; CLI runtime unverified', () => {
   const system = [
     'You evaluate actions in Auto Mode.',
     '## Output Format',
@@ -177,7 +177,7 @@ test('current Claude Code Auto mode block contract is detected by grammar', () =
   assert.match(buildPrompt(normalized), /beginning with <block>/);
 });
 
-test('current Claude Code Auto mode severity contract is detected and normalized', () => {
+test('synthetic Auto mode severity grammar is detected; CLI runtime unverified', () => {
   const system = [
     'Auto Mode classification process. Grade harm only.',
     'The allow/block boundary is 50.',
@@ -188,7 +188,7 @@ test('current Claude Code Auto mode severity contract is detected and normalized
   assert.equal(normalized.autoMode, true);
   assert.equal(normalized.autoModeFormat, 'severity');
   assert.match(buildPrompt(normalized), /beginning with <severity>/);
-  assert.equal(normalizeAutoMode('analysis\n<severity>24</severity>', 'severity'), '<severity>24</severity>');
+  assert.throws(() => normalizeAutoMode('analysis\n<severity>24</severity>', 'severity'), /XML/);
   assert.equal(
     normalizeAutoMode('<severity>87.5</severity><category>destructive</category>', 'severity'),
     '<severity>87.5</severity><category>destructive</category>'

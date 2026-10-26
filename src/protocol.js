@@ -549,34 +549,45 @@ function parseToolCalls(text, tools) {
 }
 
 function normalizeAutoMode(text, format = 'block') {
-  const source = String(text || '');
+  const source = String(text || '').trim();
+  const invalid = () => { throw new GatewayError('Auto mode XML 判定缺失、重复、冲突或不完整；需要客户端审批。', {
+    code: 'invalid_auto_mode_classifier_output', status: 502
+  }); };
+  // 2.1.304 embedded defaults permit a leading thinking block and a bare
+  // severity score. See the versioned static evidence fixture. Keep stricter
+  // duplicate/closure validation than the CLI's permissive regex parser.
+  const thinking = source.match(/^<thinking>[\s\S]*?<\/thinking>\s*/)?.[0] || '';
+  if (thinking && /<(?:\/?(?:severity|block|category|reason)|thinking)\b/i.test(thinking.slice('<thinking>'.length))) invalid();
+  const fields = {};
+  let cursor = thinking.length;
+  const pattern = /<(severity|block|category|reason)>([\s\S]*?)<\/\1>/g;
+  for (const match of source.matchAll(pattern)) {
+    if (source.slice(cursor, match.index).trim() || Object.hasOwn(fields, match[1]) || !match[2].trim()) invalid();
+    if (match[1] === 'reason') {
+      // Reasons are prose, not XML trees: preserve comparisons/redirections,
+      // but never let nested tags carry a second classifier verdict.
+      if (/<\/?[A-Za-z][A-Za-z0-9:_-]*>|<\/?[A-Za-z][A-Za-z0-9:_-]*\s+[^<>]*=|<\/?(?:severity|block|category|reason|thinking)\b|<!--|<!\[CDATA\[|<\?/i.test(match[2])) invalid();
+    } else if (/[<>]/.test(match[2])) invalid();
+    fields[match[1]] = match[2];
+    cursor = match.index + match[0].length;
+  }
+  if (source.slice(cursor).trim() || !['block', 'severity'].includes(format)) invalid();
+  if (!source.slice(thinking.length).startsWith(`<${format}>`) || Object.hasOwn(fields, format === 'block' ? 'severity' : 'block')) invalid();
   if (format === 'severity') {
-    const matches = [...source.matchAll(/<severity>\s*(\d+(?:\.\d+)?)\s*<\/severity>/gi)];
-    const match = matches.length === 1 && (source.match(/<severity>/gi) || []).length === 1 ? matches[0] : null;
-    const value = match ? Number(match[1]) : NaN;
-    if (!Number.isFinite(value) || value < 0 || value > 100) {
-      throw new GatewayError('Antigravity 模型未返回 Claude Code Auto mode 要求的 XML 严重度判定。', {
-        code: 'invalid_auto_mode_classifier_output', status: 502,
-        details: `received=${JSON.stringify(source.trim().slice(0, 500))}`
-      });
+    if (!/^\d+(?:\.\d+)?$/.test(fields.severity || '') || Number(fields.severity) > 100) invalid();
+    // Stage 1 explicitly requests severity ONLY; category is conditional on
+    // a rule match in stage 2, not derivable from the numeric score alone.
+  } else {
+    if (!['yes', 'no'].includes(fields.block)) invalid();
+    if (fields.block === 'no' && (fields.category || fields.reason)) invalid();
+    if (fields.block === 'yes') {
+      if (!fields.category || !fields.reason || !/^[A-Za-z0-9 ]{1,64}$/.test(fields.category)) invalid();
+      const rule = fields.reason.match(/^\[([^\]]+)\]\s*\S/);
+      const categoryName = value => value.replace(/[\/-]/g, ' ').replace(/[^A-Za-z0-9 ]/g, '').replace(/\s+/g, ' ').trim();
+      if (!rule || categoryName(rule[1]) !== categoryName(fields.category)) invalid();
     }
-    const category = source.match(/<category>[\s\S]*?<\/category>/i)?.[0] || '';
-    return `<severity>${match[1]}</severity>${category}`;
   }
-  const verdicts = [...source.matchAll(/<block>\s*(yes|no)\s*<\/block>/gi)];
-  if (verdicts.length !== 1 || (source.match(/<block>/gi) || []).length !== 1) {
-    throw new GatewayError('Auto mode XML 判定缺失、重复或冲突；需要客户端审批。', { code: 'invalid_auto_mode_classifier_output', status: 502 });
-  }
-  const no = verdicts[0][1].toLowerCase() === 'no';
-  if (no) return '<block>no</block>';
-  const yes = source.match(/<block>\s*yes\s*<\/block>/i);
-  if (!yes) throw new GatewayError('Antigravity 模型未返回 Claude Code Auto mode 要求的 XML 判定。', {
-    code: 'invalid_auto_mode_classifier_output', status: 502,
-    details: `received=${JSON.stringify(source.trim().slice(0, 500))}`
-  });
-  const category = source.match(/<category>[\s\S]*?<\/category>/i)?.[0] || '';
-  const reason = source.match(/<reason>[\s\S]*?<\/reason>/i)?.[0] || '';
-  return `<block>yes</block>${category}${reason}`;
+  return source;
 }
 
 function normalizeStructured(text, schema) {
@@ -595,9 +606,23 @@ function finalizeModelResult(normalized, agyResult) {
       code: 'internal_tool_use_blocked', status: 502
     });
   }
+  const termination = terminationKind(agyResult);
+  if (normalized.autoMode && termination !== 'normal') {
+    throw new GatewayError('分类上游未正常完成；需要客户端审批。', { code: 'invalid_auto_mode_classifier_output', status: 502 });
+  }
+  if (termination !== 'normal' && agyResult.toolCalls?.length) {
+    throw new GatewayError('非正常终止的工具调用不可执行。', { code: 'incomplete_tool_call', status: 502 });
+  }
   const toolCalls = Array.isArray(agyResult.toolCalls)
     ? normalizeToolCalls(agyResult.toolCalls, normalized.tools) || []
     : parseToolCalls(agyResult.text, normalized.tools) || [];
+  if (termination !== 'normal' && toolCalls.length) {
+    throw new GatewayError('非正常终止的工具调用不可执行。', { code: 'incomplete_tool_call', status: 502 });
+  }
+  if (termination !== 'normal') return {
+    ...agyResult, text: String(agyResult.text || ''), toolCalls,
+    thinking: normalized.includeThinking ? String(agyResult.thinking || '') : ''
+  };
   const choice = toolChoiceRule(normalized.toolChoice);
   if (choice.mode === 'none' && toolCalls.length) {
     throw new GatewayError('模型违反 tool_choice=none 并请求了工具。', { code: 'invalid_tool_choice', status: 502 });
@@ -639,6 +664,14 @@ function anthropicUsage(usage = {}) {
   };
 }
 
+function terminationKind(result) {
+  const reason = String(result.finishReason || '').toUpperCase();
+  if (['MAX_TOKENS', 'LENGTH', 'MAX_OUTPUT_TOKENS'].includes(reason)) return 'budget';
+  if (['SAFETY', 'RECITATION', 'BLOCKLIST', 'PROHIBITED_CONTENT', 'SPII', 'IMAGE_SAFETY', 'CONTENT_FILTER', 'REFUSAL'].includes(reason)) return 'safety';
+  if (!reason || ['STOP', 'END_TURN', 'TOOL_CALLS', 'TOOL_USE', 'STOP_SEQUENCE'].includes(reason)) return 'normal';
+  throw new GatewayError('上游终止状态不受支持，不能作为正常结束返回。', { code: 'unsupported_finish_reason', status: 502 });
+}
+
 function anthropicResponse(model, result) {
   const content = [];
   const text = deliveryText(result);
@@ -656,8 +689,8 @@ function anthropicResponse(model, result) {
     id: `msg_${crypto.randomUUID().replaceAll('-', '')}`,
     type: 'message', role: 'assistant', model,
     content,
-    stop_reason: result.toolCalls.length ? 'tool_use' : 'end_turn',
-    stop_sequence: null,
+    stop_reason: terminationKind(result) === 'budget' ? 'max_tokens' : terminationKind(result) === 'safety' ? 'refusal' : result.toolCalls.length ? 'tool_use' : String(result.finishReason || '').toUpperCase() === 'STOP_SEQUENCE' ? 'stop_sequence' : 'end_turn',
+    stop_sequence: String(result.finishReason || '').toUpperCase() === 'STOP_SEQUENCE' ? result.stopSequence ?? null : null,
     usage: anthropicUsage(result.usage || {}),
     ...(result.usageKnown === false ? { usage_known: false } : {})
   };
@@ -681,7 +714,7 @@ function chatResponse(model, result) {
   return {
     id: `chatcmpl_${crypto.randomUUID().replaceAll('-', '')}`,
     object: 'chat.completion', created: Math.floor(Date.now() / 1000), model,
-    choices: [{ index: 0, message, finish_reason: result.toolCalls.length ? 'tool_calls' : 'stop' }],
+    choices: [{ index: 0, message, finish_reason: terminationKind(result) === 'budget' ? 'length' : terminationKind(result) === 'safety' ? 'content_filter' : result.toolCalls.length ? 'tool_calls' : 'stop' }],
     ...(result.usageKnown === false ? { usage_known: false } : { usage: {
       prompt_tokens: result.usage?.input_tokens || 0,
       completion_tokens: billedOutputTokens(result.usage),
@@ -728,7 +761,8 @@ function responsesResponse(model, result, responseId) {
   }
   const response = {
     id: responseId, object: 'response', created_at: Math.floor(Date.now() / 1000),
-    status: 'completed', error: null, incomplete_details: null, model,
+    status: terminationKind(result) === 'normal' ? 'completed' : 'incomplete', error: null,
+    incomplete_details: terminationKind(result) === 'normal' ? null : { reason: terminationKind(result) === 'budget' ? 'max_output_tokens' : 'content_filter' }, model,
     output,
     usage: result.usageKnown === false ? null : {
       input_tokens: result.usage?.input_tokens || 0,
