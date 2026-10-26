@@ -128,6 +128,8 @@ function fallbackSeed(payload = {}, normalized = {}) {
 }
 
 function auxiliaryScope(req, normalized, taskProvider = '') {
+  // 分类与主对话共用账号亲和，但必须使用独立状态，避免覆盖主对话的历史时间线。
+  if (normalized.autoMode) return 'auto-mode';
   const dsh = firstString(header(req, 'x-deepseek-harness-session-id'));
   if (!dsh && taskProvider !== 'robin') return '';
   if (dsh && header(req, 'x-deepseek-harness-compact') === '1') return 'compaction';
